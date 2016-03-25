@@ -3,11 +3,9 @@
 Plugin Name: BLN.FM Cal Sync
 Description: 
 Author: Nico Knoll
-Version: 2.0
+Version: 2.2
 Author URI: http://nico.is
 */
-
-define('BLNFM_GOOGLE_SPREADSHEET_ID', '1ALu_lizA9GFiW_86lN6FGqVIoOY6buWEBB_QU2PfdYA');
 
 $blnfmSyncWarnings = array();
 
@@ -19,46 +17,48 @@ function getSpreadsheets() {
 }
 
 function file_get_contents_curl($url) {
+	$ch = curl_init();
 
-	try {
-		$ch = curl_init();
+	curl_setopt($ch, CURLOPT_HEADER, 0);
+	curl_setopt($ch, CURLOPT_RETURNTRANSFER, 1); //Set curl to return the data instead of printing it to the browser.
+	curl_setopt($ch, CURLOPT_URL, $url);
 
-		if (FALSE === $ch)
-			throw new Exception('failed to initialize');
+	$data = curl_exec($ch);
+	curl_close($ch);
 
-		curl_setopt($ch, CURLOPT_HEADER, 0);
-		curl_setopt($ch, CURLOPT_RETURNTRANSFER, 1); //Set curl to return the data instead of printing it to the browser.
-		curl_setopt($ch, CURLOPT_URL, $url);
+	return $data;
+}
 
-		$data = curl_exec($ch);
 
-		if (FALSE === $data)
-			throw new Exception(curl_error($ch), curl_errno($ch));
+function worksheetsToArray($id) {
+	$entries = array();
+	$i = 1;
 
-		curl_close($ch);
+	while(true) {
+		$url = 'https://spreadsheets.google.com/feeds/list/'.$id.'/'.$i.'/public/full?alt=json';
+		$data = @json_decode(file_get_contents_curl($url), true);
+		$starttag = substr($data['feed']['title']["\$t"], 0, strpos($data['feed']['title']["\$t"], " "));
 
-		return $data;
+		if(!count($data['feed']['entry'])) break;
 
-	} catch(Exception $e) {
+		foreach($data['feed']['entry'] as $entryKey => $entry) {
+			$data['feed']['entry'][$entryKey]['gsx$starttag']["\$t"] = $starttag;
+		}
 
-		trigger_error(sprintf(
-			'Curl failed with error #%d: %s',
-			$e->getCode(), $e->getMessage()),
-			E_USER_ERROR);
-
+		$entries = array_merge($entries, $data['feed']['entry']);
+		
+		$i++;
 	}
+
+	return $entries;
 }
 
 
 function spreadsheetToArray($id) {
-	$url = 'https://spreadsheets.google.com/feeds/list/'.$id.'/od6/public/full?alt=json';
-
-	$data = json_decode(file_get_contents_curl($url), true);
+	$entries = worksheetsToArray($id);
 	$return = array();
 
-	if(!count($data['feed']['entry'])) return false;
-
-	foreach($data['feed']['entry'] as $event) {
+	foreach($entries  as $event) {
 		$return_event = array();
 		foreach($event as $key => $value) {
 			if(preg_match("%^gsx\\$%Uis", $key)) {
@@ -73,6 +73,8 @@ function spreadsheetToArray($id) {
 					$tmp = explode(':', $value["\$t"]);
 					if($value["\$t"] != '') $return_event[$key] = @date('H:i:s', mktime((int)$tmp[0],(int)$tmp[1],0,0,0,0));
 					else $return_event[$key] = $value["\$t"];
+				} elseif($key == 'ganztägig' || $key == 'fortlaufend' || $key == 'recommended' || $key == 'promoted' || $key == 'team' || $key == 'ausverkauft') {
+					$return_event[$key] = ((trim($value["\$t"]) != '' && $value["\$t"] != 0) ? true : false);
 				} else {
 					$return_event[$key] = $value["\$t"];
 				}
@@ -89,25 +91,37 @@ function processData($eventData) {
 
 	$id = '<b>'.$eventData['id'].'</b>';
 
-	// check start and enddate
 	if($eventData['endtag'] == '') {
-		$blnfmSyncWarnings[] = $id.': Endtag fehlt und wird auf "0" gesetzt.';
-		$eventData['endtag'] = 0;
-	}
-
-	if($eventData['starttag'] == '') {
-		$blnfmSyncWarnings[] = $id.': Starttag fehlt. Es wird jetzt angenommen, dass Starttag = Endtag ist.';
-		$eventData['starttag'] = $eventData['endtag'];
+		$blnfmSyncWarnings[] = $id.': Endtag fehlt. Es wird jetzt angenommen, dass Endtag = Starttag ist.';
+		$eventData['endtag'] = $eventData['starttag'];
 	}
 
 	if($eventData['startzeit'] == '') {
 		$blnfmSyncWarnings[] = $id.': Startzeit fehlt und wird auf 23h gesetzt.';
+		// Todo:check which type the event is
 		$eventData['startzeit'] = @date('H:i:s', mktime(23,0,0,0,0,0));
+	}
+
+	if($eventData['endzeit'] == '') {
+		$blnfmSyncWarnings[] = $id.': Endzeit fehlt und wird auf 6h gesetzt.';
+		// Todo:check which type the event is
+		$eventData['endzeit'] = @date('H:i:s', mktime(6,0,0,0,0,0));
+	}
+
+	if($eventData['ausverkauft']) {
+		$blnfmSyncWarnings[] = $id.': Ausverkauft, Status wird auf "ausverkauft" gesetzt.';
+		$eventData['status'] = 'ausverkauft';
+	}
+
+	if($eventData['verschoben']) {
+		$blnfmSyncWarnings[] = $id.': Verschoben, Status wird auf "verschoben" gesetzt.';
+		$eventData['status'] = 'verschoben';
 	}
 
 	return $eventData;
 }
 
+/*
 function addLocation($name) {
 	$em_location = new EM_Location();
 
@@ -128,20 +142,20 @@ function getLocationIDs() {
 	$return = array();
 
 	foreach($EM_Locations as $EM_Location){
-	  	@$return[$EM_Location->name] = @$EM_Location->id;
+	  	@$return[$EM_Location->name] = @$EM_Location->id; 
 	}
 
 	return $return;
 }
-
+*/
 function getPostIdByMetaValue($key, $value) {
 	global $wpdb;
 	$meta = $wpdb->get_results("SELECT * FROM `".$wpdb->postmeta."` WHERE meta_key='".esc_sql($key)."' AND meta_value='".esc_sql($value)."'");
-
+	
 	if (is_array($meta) && !empty($meta) && isset($meta[0])) {
 		$meta = $meta[0];
-		}
-
+	}	
+	
 	if (is_object($meta)) {
 		return $meta->post_id;
 	} else {
@@ -154,7 +168,7 @@ function updateEvent($data) {
 	$em_event = em_get_event(getPostIdByMetaValue('_ss_id', $data['id']), 'post_id');
 	$check = true;
 
-	if($data['status'] != 'DELETED') {
+	if($data['command'] == 'UPDATE') {
 		if(!($em_event->event_id)) $em_event = new EM_Event();
 
 		$em_event->event_start_date = $data["starttag"];
@@ -165,20 +179,31 @@ function updateEvent($data) {
 		$em_event->start = strtotime($em_event->event_start_date." ".$em_event->event_start_time);
 		$em_event->end = strtotime($em_event->event_end_date." ".$em_event->event_end_time);
 
-		$em_event->location_id = $data["locationid"];
+		$em_event->location_id = $data["venueid"];
 
 		$em_event->post_title = $data["titel"];
 		$em_event->event_name = $data["titel"];
 
-		$em_event->body = (($data["kurzbeschreibung"]) ? $data["kurzbeschreibung"] : '');
-		$em_event->post_content = (($data["kurzbeschreibung"]) ? $data["kurzbeschreibung"] : '');
+		//$em_event->body = (($data["kurzbeschreibung"]) ? $data["kurzbeschreibung"] : '');
+		//$em_event->post_content = (($data["kurzbeschreibung"]) ? $data["kurzbeschreibung"] : '');
 		$em_event->post_tags = @$data["tags"];
 
 		// meta
-		$em_event->event_attributes = array('status' => $data['status']);
+		$em_event->event_attributes = array(
+			'Status' 			=> $data['status'],
+			'Line Up' 			=> $data['lineup'],
+			'Stil' 				=> $data['stil'],
+			'Preis' 			=> $data['preis'],
+			'Parent' 			=> $data['parentid'],
+			'Team' 				=> $data['team'],
+			'Recommended' 		=> $data['recommended'],
+			'Promoted' 			=> $data['promoted'],
+			'Gewinnspiel' 		=> $data['gewinnspiel'],
+			'Kurzbeschreibung'	=> $data["kurzbeschreibung"]
+		);
 		$em_event->group_id = 0;
 		$em_event->event_date_modified = date('Y-m-d H:i:s', time());
-		$em_event->event_all_day = 0;
+		$em_event->event_all_day = ($data['ganztägig'] ? 1 : 0);
 		$em_event->event_rsvp = 0;
 
 		$check = $em_event->save();
@@ -186,26 +211,31 @@ function updateEvent($data) {
 		add_post_meta($em_event->post_id, '_ss_id', $data['id']);
 
 		// add category
+		$categories = array();
 		$type = new EM_Category(strtolower($data["veranstaltungstyp"]));
 		if(!$type->term_id) $type = new EM_Category("sonstiges");
 
-		$categories = array();
-		array_push($categories, $type->term_id);
+		array_push($categories, ($type->term_id));
 		if($data["recommended"]) 	array_push($categories, get_cat_ID('tipp'));
 		if($data["promoted"]) 		array_push($categories, get_cat_ID('sponsored'));
 		if($data["team"]) 			array_push($categories, get_cat_ID('team'));
+		if($data["veranstaltungstyp"]) array_push($categories, get_cat_ID(strtolower($data["veranstaltungstyp"])));
+		if($data["gewinnspiel"]) 			array_push($categories, get_cat_ID('gewinnspiel'));
+		if($data["preis"] != '' && $data["preis"] == 0) 			array_push($categories, get_cat_ID('kostenlos'));
 
 		if(count($categories)) wp_set_post_terms($em_event->post_id, $categories, 'event-categories', false);
 
 		// add tags
 		$tags = array();
 		if($data["tags"]) 			array_push($tags, $data["tags"]);
-		if($data["ausverkauft"]) 	array_push($tags, "ausverkauft");
+		//if($data["ausverkauft"]) 	array_push($tags, "ausverkauft");
 		if($data["openair"]) 		array_push($tags, "open air");
+		if($data['lineup'])			$tags = array_merge($tags, explode(',', $data['lineup']));
+		if($data['tags'])			$tags = array_merge($tags, explode(',', $data['tags']));
 
 		if(count($tags)) wp_set_post_terms($em_event->post_id, $tags, 'event-tags', false);
 
-	} else {
+	} elseif($data['command'] == 'DELETE') {
 		if($em_event->event_id) $check = $em_event->delete(true);
 	}
 
@@ -217,42 +247,47 @@ function updateEvents() {
 		$events = spreadsheetToArray($spreadsheet);
 		foreach($events as $event) {
 			// reload locations as we dynamically create them if missing
+			/*
 			$locations = getLocationIDs();
 
 			$event['locationid'] = @$locations[$event['venue']];
 			if($event['locationid'] == '') $event['locationid'] = addLocation($event['venue']);
-
+			*/
 			updateEvent($event);
 		}
 	}
-
+	
 }
 
 
 function blnfmcalsync_page_function() {
 	global $blnfmSyncWarnings;
 
+	echo '<div class="wrap">';
+
 	if(@$_POST['syncnow']) {
-		echo '<div id="message" class="updated">
+		echo '<div class="updated">
 		<p>Veranstaltungen sollten jetzt synchronisiert sein.</p>
 		</div>';
 
-		update_option( 'blnfmcalsync-lastsync', time() );
-
+		update_option( 'blnfmcalsync-lastsync', time());
 		updateEvents();
 	}
 
 	foreach($blnfmSyncWarnings as $blnfmSyncWarning) {
-		echo '<div id="message" class="warning">
+		echo '<div class="notice notice-warning">
 		<p>'.$blnfmSyncWarning.'</p>
 		</div>';
 	}
+
+	echo '</div>';
+
 
 	$lastSynced = get_option( 'blnfmcalsync-lastsync' );
 
 	echo '<div class="wrap">
 	<h1>Mit Google Spreadsheet synchronisieren</h1>
-	<p>Spreadsheet URLs: </p>
+	<p><b>Spreadsheet URLs:</b> </p>
 	<ul>
 	';
 
