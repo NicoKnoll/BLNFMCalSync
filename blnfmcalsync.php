@@ -39,7 +39,7 @@ function worksheetsToArray($id) {
 		$data = @json_decode(file_get_contents_curl($url), true);
 		$starttag = substr($data['feed']['title']["\$t"], 0, strpos($data['feed']['title']["\$t"], " "));
 
-		if(!count($data['feed']['entry'])) break;
+		if(!isset($data['feed']['entry'])) break;
 
 		foreach($data['feed']['entry'] as $entryKey => $entry) {
 			$data['feed']['entry'][$entryKey]['gsx$starttag']["\$t"] = $starttag;
@@ -108,12 +108,12 @@ function processData($eventData) {
 		$eventData['endzeit'] = @date('H:i:s', mktime(6,0,0,0,0,0));
 	}
 
-	if($eventData['ausverkauft']) {
+	if(isset($eventData['ausverkauft'])) {
 		$blnfmSyncWarnings[] = $id.': Ausverkauft, Status wird auf "ausverkauft" gesetzt.';
 		$eventData['status'] = 'ausverkauft';
 	}
 
-	if($eventData['verschoben']) {
+	if(isset($eventData['verschoben'])) {
 		$blnfmSyncWarnings[] = $id.': Verschoben, Status wird auf "verschoben" gesetzt.';
 		$eventData['status'] = 'verschoben';
 	}
@@ -168,7 +168,7 @@ function updateEvent($data) {
 	$em_event = em_get_event(getPostIdByMetaValue('_ss_id', $data['id']), 'post_id');
 	$check = true;
 
-	if($data['command'] == 'UPDATE') {
+	if(isset($data['command']) && $data['command'] == 'UPDATE') {
 		if(!($em_event->event_id)) $em_event = new EM_Event();
 
 		$em_event->event_start_date = $data["starttag"];
@@ -179,22 +179,23 @@ function updateEvent($data) {
 		$em_event->start = strtotime($em_event->event_start_date." ".$em_event->event_start_time);
 		$em_event->end = strtotime($em_event->event_end_date." ".$em_event->event_end_time);
 
-		$em_event->location_id = $data["venueid"];
+		$em_event->location_id = (isset($data["venueid"]) ? $data["venueid"] : '');
 
 		$em_event->post_title = $data["titel"];
 		$em_event->event_name = $data["titel"];
 
 		//$em_event->body = (($data["kurzbeschreibung"]) ? $data["kurzbeschreibung"] : '');
-		//$em_event->post_content = (($data["kurzbeschreibung"]) ? $data["kurzbeschreibung"] : '');
+		$em_event->post_content = (isset($data["kurzbeschreibung"]) ? $data["kurzbeschreibung"] : '');
+		$em_event->post_excerpt = (isset($data["auszug"]) ? $data["auszug"] : '');
 		$em_event->post_tags = @$data["tags"];
 
 		// meta
 		$em_event->event_attributes = array(
 			'Status' 			=> $data['status'],
 			'Line Up' 			=> $data['lineup'],
-			'Stil' 				=> $data['stil'],
+			'Stil' 				=> (isset($data["stil"]) ? $data["stil"] : ''),
 			'Preis' 			=> $data['preis'],
-			'Parent' 			=> $data['parentid'],
+			'Parent' 			=> (isset($data["parentid"]) ? $data["parentid"] : ''),
 			'Team' 				=> $data['team'],
 			'Recommended' 		=> $data['recommended'],
 			'Promoted' 			=> $data['promoted'],
@@ -235,7 +236,7 @@ function updateEvent($data) {
 
 		if(count($tags)) wp_set_post_terms($em_event->post_id, $tags, 'event-tags', false);
 
-	} elseif($data['command'] == 'DELETE') {
+	} elseif(isset($data['command']) && $data['command'] == 'DELETE') {
 		if($em_event->event_id) $check = $em_event->delete(true);
 	}
 
